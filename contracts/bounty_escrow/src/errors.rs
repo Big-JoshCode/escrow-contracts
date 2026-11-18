@@ -22,4 +22,9 @@ pub enum Error {
     InvalidFee = 15,
     Overflow = 16,
     RelayerNotAllowed = 17,
+    TopUpLimitReached = 18,
+    DisputeNotExpired = 19,
+    DisputeAlreadyUsed = 20,
+    NothingToClaim = 21,
+    AlreadyClaimed = 22,
 }
