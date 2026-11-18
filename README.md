@@ -43,7 +43,7 @@ decides *whether a payment is allowed at all*, and that is the part you should a
 | | |
 |---|---|
 | **Deployed on testnet** | [`CCEKBPYC…ZF3J4RKN`](https://stellar.expert/explorer/testnet/contract/CCEKBPYCWKNTXIQLXJHVAF7RYGUZZ6MITA7VVJBOK5BHXUO44ELZ4F4V) |
-| **Size** | 21,408 bytes of Wasm, 23 entry points |
+| **Size** | 21,408 bytes of Wasm, 29 entry points |
 | **Tests** | 63, including a property test of the funds invariant |
 | **Built with** | Rust 1.99.1 · `soroban-sdk` 29.0.1 · target `wasm32v1-none` |
 | **Audited** | ❌ **No.** See [Before mainnet](#before-mainnet). |
@@ -213,12 +213,16 @@ Auth is tested two ways: `env.mock_all_auths()` where authorisation is not the s
 
 ## Before mainnet
 
-- [ ] **External audit.** This contract has not had one.
-- [ ] Admin moved to a multisig account — it can upgrade the code.
-- [ ] Per-token `max_amount` starting at 500 USDC.
-- [ ] USDC contract id verified against Circle's own documentation, not copied from a search result.
-- [ ] Relayer key in a KMS/HSM.
-- [ ] Re-check the TTL numbers against mainnet network settings.
+Run `scripts/deploy-mainnet.sh --dry-run` first. It enforces the items marked **check**; the rest are manual.
+
+- [ ] **External audit.** This contract has not had one. *(manual)*
+- [ ] Admin moved to a multisig account, since it can upgrade the code. *(check: admin is a multisig)*
+- [ ] Per-token `max_amount` starting at 500 USDC. *(check: MAX_AMOUNT within cap)*
+- [ ] USDC contract id verified against Circle's own documentation. *(check: MAINNET_USDC matches the derived id; the issuer constant itself is manual)*
+- [ ] Admin, arbiter, treasury and relayer are four different accounts. *(check)*
+- [ ] Wasm matches the reproducible build. *(check: EXPECTED_WASM_SHA256)*
+- [ ] Relayer key in a KMS/HSM. *(manual)*
+- [ ] Re-check the TTL numbers against mainnet network settings. *(manual)*
 
 `cargo audit` passes with one documented exception: `RUSTSEC-2026-0387` (`crypto-bigint` 0.5.5) is
 reached only through the SDK's **test** host, is not in the deployed Wasm, and cannot be bumped until
@@ -226,6 +230,14 @@ upstream moves. The justification lives in [`.cargo/audit.toml`](.cargo/audit.to
 on every SDK upgrade.
 
 ---
+
+## Verify what is deployed
+
+```bash
+bash scripts/verify-deployment.sh testnet
+```
+
+It fetches the Wasm running at the recorded contract id and compares its hash with `deployments/testnet.json`.
 
 ## Related
 

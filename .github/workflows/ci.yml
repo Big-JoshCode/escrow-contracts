@@ -14,6 +14,9 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # the upgrade test embeds the built wasm, so build before fmt/clippy/test
       - run: ./scripts/build.sh
+      - run: bash scripts/reproducible-build.sh
+      - run: python3 scripts/check_contract_docs.py
+      - run: bash scripts/tests/deploy-mainnet.test.sh
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test

@@ -27,4 +27,6 @@ pub enum Error {
     DisputeAlreadyUsed = 20,
     NothingToClaim = 21,
     AlreadyClaimed = 22,
+    /// The arbiter named itself or the treasury as the resolution winner.
+    ConflictOfInterest = 23,
 }
