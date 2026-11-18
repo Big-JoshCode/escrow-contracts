@@ -1,7 +1,7 @@
 use soroban_sdk::{Address, Env};
 
 use crate::errors::Error;
-use crate::types::{Bounty, Config, DataKey, TokenLimits, Totals};
+use crate::types::{Bounty, ClaimRecord, Config, DataKey, DisputeRecord, TokenLimits, Totals};
 
 // Ledgers close about every 5 s: 17_280 per day. Testnet max entry TTL is
 // 3_110_400 ledgers (180 d). Worst case a bounty must live is
@@ -116,5 +116,85 @@ pub fn get_totals(env: &Env, token: &Address) -> Totals {
 pub fn set_totals(env: &Env, token: &Address, t: &Totals) {
     let key = DataKey::Totals(token.clone());
     env.storage().persistent().set(&key, t);
+    bump_persistent(env, &key);
+}
+
+/// Used when no timeout has been set. 14 days: long enough for a maintainer to reach the arbiter, short enough
+/// that a lost arbiter key does not freeze funds for long.
+pub const DEFAULT_DISPUTE_TIMEOUT_SECS: u64 = 14 * 86_400;
+
+pub fn dispute_timeout(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::DisputeTimeout)
+        .unwrap_or(DEFAULT_DISPUTE_TIMEOUT_SECS)
+}
+
+pub fn set_dispute_timeout(env: &Env, secs: u64) {
+    env.storage().instance().set(&DataKey::DisputeTimeout, &secs);
+    bump_instance(env);
+}
+
+pub fn get_dispute(env: &Env, id: u64) -> Option<DisputeRecord> {
+    let key = DataKey::Dispute(id);
+    let v = env.storage().persistent().get(&key);
+    if v.is_some() {
+        bump_persistent(env, &key);
+    }
+    v
+}
+
+pub fn set_dispute(env: &Env, id: u64, r: &DisputeRecord) {
+    let key = DataKey::Dispute(id);
+    env.storage().persistent().set(&key, r);
+    bump_persistent(env, &key);
+}
+
+pub fn get_top_ups(env: &Env, id: u64) -> u32 {
+    let key = DataKey::TopUps(id);
+    match env.storage().persistent().get(&key) {
+        Some(n) => {
+            bump_persistent(env, &key);
+            n
+        }
+        None => 0,
+    }
+}
+
+pub fn set_top_ups(env: &Env, id: u64, n: u32) {
+    let key = DataKey::TopUps(id);
+    env.storage().persistent().set(&key, &n);
+    bump_persistent(env, &key);
+}
+
+pub fn get_claim(env: &Env, id: u64) -> Option<ClaimRecord> {
+    let key = DataKey::Claim(id);
+    let v = env.storage().persistent().get(&key);
+    if v.is_some() {
+        bump_persistent(env, &key);
+    }
+    v
+}
+
+pub fn set_claim(env: &Env, id: u64, r: &ClaimRecord) {
+    let key = DataKey::Claim(id);
+    env.storage().persistent().set(&key, r);
+    bump_persistent(env, &key);
+}
+
+pub fn get_claimable_total(env: &Env, token: &Address) -> i128 {
+    let key = DataKey::ClaimableTotal(token.clone());
+    match env.storage().persistent().get(&key) {
+        Some(v) => {
+            bump_persistent(env, &key);
+            v
+        }
+        None => 0,
+    }
+}
+
+pub fn set_claimable_total(env: &Env, token: &Address, v: i128) {
+    let key = DataKey::ClaimableTotal(token.clone());
+    env.storage().persistent().set(&key, &v);
     bump_persistent(env, &key);
 }

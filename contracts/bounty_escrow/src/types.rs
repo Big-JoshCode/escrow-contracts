@@ -59,6 +59,23 @@ pub struct Totals {
     pub held: i128,
 }
 
+/// Written by `open_dispute`. Its presence means the bounty has used its one dispute.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRecord {
+    pub opened_at: u64,
+}
+
+/// A winner payout that could not be transferred at release time (for example, no trustline).
+/// The net stays in the contract until `claim` pays it.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimRecord {
+    pub winner: Address,
+    pub net: i128,
+    pub claimed: bool,
+}
+
 #[contracttype]
 pub enum DataKey {
     Config,
@@ -67,4 +84,11 @@ pub enum DataKey {
     ActiveByIssue(u64, u64),
     Token(Address),
     Totals(Address),
+    /// Instance storage. Kept out of `Config` so existing deployments keep decoding their config.
+    DisputeTimeout,
+    Dispute(u64),
+    TopUps(u64),
+    Claim(u64),
+    /// Sum of unclaimed winner credits per token. `held + claimable == balance`.
+    ClaimableTotal(Address),
 }

@@ -22,6 +22,8 @@ pub struct Released {
     pub net: i128,
     pub fee: i128,
     pub caller: Address,
+    /// True when the winner could not be paid now and the net is claimable later.
+    pub deferred: bool,
 }
 
 #[contractevent(topics = ["bounty", "refunded"])]
@@ -46,6 +48,7 @@ pub struct Resolved {
     pub winner_net: i128,
     pub fee: i128,
     pub maintainer_amount: i128,
+    pub winner_deferred: bool,
 }
 
 #[contractevent(topics = ["bounty", "config"])]
@@ -63,4 +66,34 @@ pub struct Unpaused {}
 #[contractevent(topics = ["bounty", "upgraded"])]
 pub struct Upgraded {
     pub wasm_hash: BytesN<32>,
+}
+
+#[contractevent(topics = ["bounty", "deadline_extended"])]
+pub struct DeadlineExtended {
+    #[topic]
+    pub id: u64,
+    pub old_deadline: u64,
+    pub new_deadline: u64,
+}
+
+#[contractevent(topics = ["bounty", "topped_up"])]
+pub struct ToppedUp {
+    #[topic]
+    pub id: u64,
+    pub extra: i128,
+    pub new_amount: i128,
+}
+
+#[contractevent(topics = ["bounty", "dispute_expired"])]
+pub struct DisputeExpired {
+    #[topic]
+    pub id: u64,
+}
+
+#[contractevent(topics = ["bounty", "claimed"])]
+pub struct Claimed {
+    #[topic]
+    pub id: u64,
+    pub winner: Address,
+    pub net: i128,
 }

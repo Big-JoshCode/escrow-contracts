@@ -28,8 +28,10 @@ stateDiagram-v2
     [*] --> Open: fund_bounty — tokens leave the maintainer
     Open --> Released: release — paid to a PR author
     Open --> Refunded: refund — returned, after deadline + grace
-    Open --> Disputed: open_dispute — freezes the bounty
+    Open --> Open: extend_deadline / top_up — the maintainer adjusts an open bounty
+    Open --> Disputed: open_dispute — freezes the bounty (once per bounty)
     Disputed --> Resolved: resolve — an arbiter splits it
+    Disputed --> Open: expire_dispute — after the timeout, nobody is judged
     Released --> [*]
     Refunded --> [*]
     Resolved --> [*]
@@ -89,7 +91,12 @@ Set `TESTNET_USDC` to a verified USDC SAC id to allowlist USDC as well.
 | `release(caller, bounty_id, winner)` | maintainer, **or** the relayer if `relayer_allowed` | Status is `Open` · the winner is neither the maintainer nor the contract itself. Allowed *after* the deadline too, as long as no refund has happened. |
 | `refund(maintainer, bounty_id)` | maintainer only | Status is `Open` · `now ≥ deadline + grace`. Returns the full amount, **no fee**. Works while paused. |
 | `open_dispute(caller, bounty_id)` | maintainer or arbiter | Status is `Open`. Freezes release *and* refund. |
-| `resolve(arbiter, bounty_id, winner, winner_bps)` | arbiter only | Status is `Disputed` · `winner_bps ≤ 10000` · a winner is required when `winner_bps > 0`. Works while paused. |
+| `resolve(arbiter, bounty_id, winner, winner_bps)` | arbiter only | Status is `Disputed` · `winner_bps ≤ 10000` · a winner is required when `winner_bps > 0`. Works while paused. If the winner's transfer fails (for example, no trustline), the net becomes a claim instead of reverting. |
+| `extend_deadline(maintainer, bounty_id, new_deadline)` | maintainer only | Status is `Open` · `new_deadline > deadline` (extend only) · `new_deadline ≤ now + max_duration`. Emits `deadline_extended`. |
+| `top_up(maintainer, bounty_id, extra)` | maintainer only | Status is `Open` · `extra > 0` · not paused · token still allowlisted · new total ≤ the token's `max_amount` · at most 10 top-ups per bounty. The fee snapshot does not change. Emits `topped_up`. |
+| `expire_dispute(caller, bounty_id)` | anyone | Status is `Disputed` · `now ≥ opened_at + dispute_timeout`. Returns the bounty to `Open`. A bounty can be disputed only once. Emits `dispute_expired`. |
+| `claim(winner, bounty_id)` | the winner of a deferred payout | A claim exists · it is unclaimed · the caller is the recorded winner. Pays the deferred net. Emits `claimed`. |
+| `set_dispute_timeout(admin, secs)` | admin | `secs > 0`. Defaults to 14 days until set. |
 
 ### Reading
 
@@ -119,7 +126,7 @@ Stable numbering — **never renumbered after deploy**, because clients map on t
 ### Events
 
 Every state change emits one, with enough data that an indexer never needs a follow-up read:
-`funded` · `released` · `refunded` · `disputed` · `resolved` · `config` · `paused` · `unpaused` · `upgraded`.
+`funded` · `released` (with `deferred`) · `refunded` · `disputed` · `resolved` (with `winner_deferred`) · `deadline_extended` · `topped_up` · `dispute_expired` · `claimed` · `config` · `paused` · `unpaused` · `upgraded`.
 
 ---
 
@@ -145,8 +152,12 @@ Per token, after **every** state change:
 
 ```
 funded == released_net + fees + refunded + held
-held   == the contract's actual token balance
+held + claimable == the contract's actual token balance
 ```
+
+`claimable` is the sum of winner payouts that failed to transfer and are waiting for `claim`. A deferred
+payout moves its net from `held` to `claimable`, and `claim` moves it to `released_net`. The fee is still
+paid when a payout is deferred. `released_net` does not include a deferred payout until it is claimed.
 
 A property test runs random sequences of fund / release / refund / dispute / resolve across two
 tokens and asserts this after every single step — plus that the total token supply never changes and
