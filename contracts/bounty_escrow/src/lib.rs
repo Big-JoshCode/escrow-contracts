@@ -323,6 +323,11 @@ impl BountyEscrow {
         Ok(())
     }
 
+    /// Splits a disputed bounty between a winner and the maintainer.
+    ///
+    /// The winner may not be the maintainer, the contract (`SelfPayout`), or the
+    /// arbiter or the treasury (`ConflictOfInterest`). The arbiter cannot route
+    /// money to itself or to the fee account.
     pub fn resolve(
         env: Env,
         arbiter: Address,
@@ -330,83 +335,22 @@ impl BountyEscrow {
         winner: Option<Address>,
         winner_bps: u32,
     ) -> Result<(), Error> {
-        arbiter.require_auth();
-        let cfg = storage::get_config(&env)?;
-        if arbiter != cfg.arbiter {
-            return Err(Error::Unauthorized);
-        }
-        let mut b = storage::get_bounty(&env, bounty_id)?;
-        if b.status != Status::Disputed {
-            return Err(Error::InvalidStatus);
-        }
-        if winner_bps > 10_000 {
-            return Err(Error::InvalidSplit);
-        }
-        let portion = fees::portion(b.amount, winner_bps)?;
-        let mut fee = 0;
-        let mut winner_net = 0;
-        if winner_bps > 0 {
-            match &winner {
-                None => return Err(Error::InvalidSplit),
-                Some(w) if *w == b.maintainer || *w == env.current_contract_address() => {
-                    return Err(Error::SelfPayout)
-                }
-                Some(_) => {}
-            }
-            fee = fees::fee(portion, b.fee_bps)?;
-            winner_net = sub(portion, fee)?;
-        }
-        let maintainer_amount = sub(b.amount, portion)?;
+        settle(&env, arbiter, bounty_id, winner, winner_bps, None)
+    }
 
-        b.status = Status::Resolved;
-        b.winner = if winner_bps > 0 { winner.clone() } else { None };
-        storage::set_bounty(&env, &b);
-        storage::clear_active(&env, b.repo_id, b.issue);
-
-        let tok = token::Client::new(&env, &b.token);
-        let me = env.current_contract_address();
-        let mut winner_deferred = false;
-        if let (Some(w), true) = (&winner, winner_net > 0) {
-            if !matches!(tok.try_transfer(&me, w, &winner_net), Ok(Ok(()))) {
-                winner_deferred = true;
-                storage::set_claim(
-                    &env,
-                    bounty_id,
-                    &ClaimRecord {
-                        winner: w.clone(),
-                        net: winner_net,
-                        claimed: false,
-                    },
-                );
-                defer(&env, &b.token, winner_net)?;
-            }
-        }
-
-        let mut t = storage::get_totals(&env, &b.token);
-        if winner_net > 0 && !winner_deferred {
-            t.released_net = add(t.released_net, winner_net)?;
-        }
-        t.fees = add(t.fees, fee)?;
-        t.refunded = add(t.refunded, maintainer_amount)?;
-        t.held = sub(t.held, b.amount)?;
-        storage::set_totals(&env, &b.token, &t);
-
-        if fee > 0 {
-            tok.transfer(&me, &cfg.treasury, &fee);
-        }
-        if maintainer_amount > 0 {
-            tok.transfer(&me, &b.maintainer, &maintainer_amount);
-        }
-        events::Resolved {
-            id: bounty_id,
-            winner: b.winner,
-            winner_net,
-            fee,
-            maintainer_amount,
-            winner_deferred,
-        }
-        .publish(&env);
-        Ok(())
+    /// Same as `resolve`, and also emits `EvidenceRecorded` carrying
+    /// `evidence_hash`: a SHA-256 digest of the evidence the arbiter relied on
+    /// (see docs/CONTRACT.md, "Resolution evidence"). The `resolved` event is
+    /// unchanged, so existing indexers keep working.
+    pub fn resolve_with_evidence(
+        env: Env,
+        arbiter: Address,
+        bounty_id: u64,
+        winner: Option<Address>,
+        winner_bps: u32,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        settle(&env, arbiter, bounty_id, winner, winner_bps, Some(evidence_hash))
     }
 
     /// Lengthens an open bounty. Extend only: the deadline a contributor saw can never move earlier.
@@ -714,4 +658,103 @@ impl BountyEscrow {
         events::Upgraded { wasm_hash }.publish(&env);
         Ok(())
     }
+}
+
+/// Shared body of `resolve` and `resolve_with_evidence`.
+fn settle(
+    env: &Env,
+    arbiter: Address,
+    bounty_id: u64,
+    winner: Option<Address>,
+    winner_bps: u32,
+    evidence: Option<BytesN<32>>,
+) -> Result<(), Error> {
+    arbiter.require_auth();
+    let cfg = storage::get_config(env)?;
+    if arbiter != cfg.arbiter {
+        return Err(Error::Unauthorized);
+    }
+    let mut b = storage::get_bounty(env, bounty_id)?;
+    if b.status != Status::Disputed {
+        return Err(Error::InvalidStatus);
+    }
+    if winner_bps > 10_000 {
+        return Err(Error::InvalidSplit);
+    }
+    let portion = fees::portion(b.amount, winner_bps)?;
+    let mut fee = 0;
+    let mut winner_net = 0;
+    if winner_bps > 0 {
+        match &winner {
+            None => return Err(Error::InvalidSplit),
+            Some(w) if *w == b.maintainer || *w == env.current_contract_address() => {
+                return Err(Error::SelfPayout)
+            }
+            Some(w) if *w == cfg.arbiter || *w == cfg.treasury => {
+                return Err(Error::ConflictOfInterest)
+            }
+            Some(_) => {}
+        }
+        fee = fees::fee(portion, b.fee_bps)?;
+        winner_net = sub(portion, fee)?;
+    }
+    let maintainer_amount = sub(b.amount, portion)?;
+
+    b.status = Status::Resolved;
+    b.winner = if winner_bps > 0 { winner.clone() } else { None };
+    storage::set_bounty(env, &b);
+    storage::clear_active(env, b.repo_id, b.issue);
+
+    let tok = token::Client::new(env, &b.token);
+    let me = env.current_contract_address();
+    let mut winner_deferred = false;
+    if let (Some(w), true) = (&winner, winner_net > 0) {
+        if !matches!(tok.try_transfer(&me, w, &winner_net), Ok(Ok(()))) {
+            winner_deferred = true;
+            storage::set_claim(
+                env,
+                bounty_id,
+                &ClaimRecord {
+                    winner: w.clone(),
+                    net: winner_net,
+                    claimed: false,
+                },
+            );
+            defer(env, &b.token, winner_net)?;
+        }
+    }
+
+    let mut t = storage::get_totals(env, &b.token);
+    if winner_net > 0 && !winner_deferred {
+        t.released_net = add(t.released_net, winner_net)?;
+    }
+    t.fees = add(t.fees, fee)?;
+    t.refunded = add(t.refunded, maintainer_amount)?;
+    t.held = sub(t.held, b.amount)?;
+    storage::set_totals(env, &b.token, &t);
+
+    if fee > 0 {
+        tok.transfer(&me, &cfg.treasury, &fee);
+    }
+    if maintainer_amount > 0 {
+        tok.transfer(&me, &b.maintainer, &maintainer_amount);
+    }
+    events::Resolved {
+        id: bounty_id,
+        winner: b.winner,
+        winner_net,
+        fee,
+        maintainer_amount,
+        winner_deferred,
+    }
+    .publish(env);
+    if let Some(evidence_hash) = evidence {
+        events::EvidenceRecorded {
+            id: bounty_id,
+            arbiter,
+            evidence_hash,
+        }
+        .publish(env);
+    }
+    Ok(())
 }

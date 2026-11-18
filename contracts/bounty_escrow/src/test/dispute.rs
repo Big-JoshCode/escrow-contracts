@@ -1,7 +1,10 @@
-use soroban_sdk::{testutils::Address as _, Address};
+use soroban_sdk::{
+    testutils::{Address as _, Events as _},
+    Address, BytesN, Event,
+};
 
 use super::setup::*;
-use crate::{Error, Status};
+use crate::{events::EvidenceRecorded, Error, Status};
 
 #[test]
 fn maintainer_and_arbiter_can_open() {
@@ -181,4 +184,69 @@ fn resolve_winner_is_contract_rejected() {
         .client
         .try_resolve(&c.arbiter, &id, &Some(c.client.address.clone()), &5_000);
     assert_eq!(r.unwrap_err().unwrap(), Error::SelfPayout);
+}
+
+#[test]
+fn resolve_rejects_the_arbiter_as_winner() {
+    let c = Ctx::new();
+    let id = disputed(&c);
+    let r = c
+        .client
+        .try_resolve(&c.arbiter, &id, &Some(c.arbiter.clone()), &5_000);
+    assert_eq!(r.unwrap_err().unwrap(), Error::ConflictOfInterest);
+    assert_eq!(c.client.get_bounty(&id).status, Status::Disputed);
+}
+
+#[test]
+fn resolve_rejects_the_treasury_as_winner() {
+    let c = Ctx::new();
+    let id = disputed(&c);
+    let r = c
+        .client
+        .try_resolve(&c.arbiter, &id, &Some(c.treasury.clone()), &5_000);
+    assert_eq!(r.unwrap_err().unwrap(), Error::ConflictOfInterest);
+    assert_eq!(c.client.get_bounty(&id).status, Status::Disputed);
+}
+
+#[test]
+fn resolve_with_evidence_pays_out_and_records_the_hash() {
+    let c = Ctx::new();
+    let id = disputed(&c);
+    let hash = BytesN::from_array(&c.env, &[7u8; 32]);
+    c.client.resolve_with_evidence(
+        &c.arbiter,
+        &id,
+        &Some(c.winner.clone()),
+        &10_000,
+        &hash,
+    );
+    assert_eq!(c.client.get_bounty(&id).status, Status::Resolved);
+
+    // Events of the last invocation: the evidence record comes last.
+    let all = c.env.events().all();
+    let events = all.events();
+    let expected = EvidenceRecorded {
+        id,
+        arbiter: c.arbiter.clone(),
+        evidence_hash: hash.clone(),
+    };
+    assert_eq!(
+        events.last().unwrap(),
+        &expected.to_xdr(&c.env, &c.client.address)
+    );
+}
+
+#[test]
+fn resolve_with_evidence_still_rejects_the_arbiter_as_winner() {
+    let c = Ctx::new();
+    let id = disputed(&c);
+    let hash = BytesN::from_array(&c.env, &[7u8; 32]);
+    let r = c.client.try_resolve_with_evidence(
+        &c.arbiter,
+        &id,
+        &Some(c.arbiter.clone()),
+        &5_000,
+        &hash,
+    );
+    assert_eq!(r.unwrap_err().unwrap(), Error::ConflictOfInterest);
 }

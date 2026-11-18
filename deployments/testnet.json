@@ -1,1 +1,6 @@
-{"network":"testnet","contract_id":"CCEKBPYCWKNTXIQLXJHVAF7RYGUZZ6MITA7VVJBOK5BHXUO44ELZ4F4V"}
+{
+  "network": "testnet",
+  "contract_id": "CCEKBPYCWKNTXIQLXJHVAF7RYGUZZ6MITA7VVJBOK5BHXUO44ELZ4F4V",
+  "wasm_hash": null,
+  "commit": null
+}
