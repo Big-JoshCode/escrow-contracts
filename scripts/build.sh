@@ -17,7 +17,7 @@ sha256_of() {
   fi
 }
 
-stellar contract build
+stellar contract build --locked
 W=target/wasm32v1-none/release/bounty_escrow.wasm
 echo "size: $(wc -c < "$W") bytes"
 hash="$(sha256_of "$W")"

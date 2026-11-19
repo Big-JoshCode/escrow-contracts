@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # fund->release and fund->dispute->resolve with native XLM on testnet.
 # Asserts the balance deltas each step must cause, and the get_totals invariant at the end.
+# Requires Stellar CLI identities: se-testnet-admin, se-testnet-arbiter, se-testnet-treasury,
+# se-testnet-relayer, se-testnet-maintainer, se-testnet-contributor.
+# Create them with: stellar keys generate <name> --network testnet --fund
 # Exits non-zero on the first mismatch.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -8,6 +11,16 @@ ID=$(python3 -c 'import json;print(json.load(open("deployments/testnet.json"))["
 NATIVE=$(stellar contract id asset --asset native --network testnet)
 a() { stellar keys address "se-testnet-$1"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# Preflight check: verify required identities exist
+check_identity() {
+  if ! a "$1" > /dev/null 2>&1; then
+    fail "identity 'se-testnet-$1' not found. Create it with: stellar keys generate se-testnet-$1 --network testnet --fund"
+  fi
+}
+# Preflight: check all required identities exist
+for identity in admin arbiter treasury relayer maintainer contributor; do
+  check_identity "$identity"
+done
 # A failed call aborts the script. The grep only strips the CLI's info lines.
 inv() {
   local src=$1; shift
@@ -38,6 +51,8 @@ assert_delta() {
   echo "ok   $label: delta $delta"
 }
 bounty_fee() { inv admin get_bounty --id "$1" | python3 -c 'import json,sys; print(int(json.load(sys.stdin)["fee_bps"]))'; }
+# Extract bounty_id from fund_bounty response (returned as a string)
+extract_bounty_id() { python3 -c 'import json,sys; print(int(json.load(sys.stdin)))'; }
 
 AMOUNT=100000000
 FEE_BPS=300        # fee_bps given to init in deploy-testnet.sh; each bounty snapshots it at fund time
@@ -57,12 +72,12 @@ CONTRIB=$(a contributor); TREAS=$(a treasury); MAINT=$(a maintainer)
 
 echo "== A: fund -> release"
 K0=$(bal "$ID")
-inv maintainer fund_bounty --maintainer "$(a maintainer)" --repo_id 1 --issue "$ISSUE" --token "$NATIVE" --amount "$AMOUNT" --deadline "$DL" --relayer_allowed true
+BOUNTY_A=$(inv maintainer fund_bounty --maintainer "$(a maintainer)" --repo_id 1 --issue "$ISSUE" --token "$NATIVE" --amount "$AMOUNT" --deadline "$DL" --relayer_allowed true | extract_bounty_id)
 K1=$(bal "$ID")
 assert_delta "A fund: contract received amount" "$AMOUNT" "$K0" "$K1"
-assert_eq "A bounty 1 fee snapshot" "$FEE_BPS" "$(bounty_fee 1)"
+assert_eq "A bounty $BOUNTY_A fee snapshot" "$FEE_BPS" "$(bounty_fee "$BOUNTY_A")"
 CA0=$(bal "$CONTRIB"); TA0=$(bal "$TREAS"); KA0=$(bal "$ID")
-inv relayer release --caller "$(a relayer)" --bounty_id 1 --winner "$(a contributor)"
+inv relayer release --caller "$(a relayer)" --bounty_id "$BOUNTY_A" --winner "$(a contributor)"
 CA1=$(bal "$CONTRIB"); TA1=$(bal "$TREAS"); KA1=$(bal "$ID")
 assert_delta "A release: contributor net" "$NET_A" "$CA0" "$CA1"
 assert_delta "A release: treasury fee" "$FEE_A" "$TA0" "$TA1"
@@ -70,13 +85,13 @@ assert_delta "A release: contract paid out amount" "-$AMOUNT" "$KA0" "$KA1"
 
 echo "== B: fund -> dispute -> resolve ${WINNER_BPS}/10000 to winner"
 KB0=$(bal "$ID")
-inv maintainer fund_bounty --maintainer "$(a maintainer)" --repo_id 1 --issue "$((ISSUE+1))" --token "$NATIVE" --amount "$AMOUNT" --deadline "$DL" --relayer_allowed false
+BOUNTY_B=$(inv maintainer fund_bounty --maintainer "$(a maintainer)" --repo_id 1 --issue "$((ISSUE+1))" --token "$NATIVE" --amount "$AMOUNT" --deadline "$DL" --relayer_allowed false | extract_bounty_id)
 KB1=$(bal "$ID")
 assert_delta "B fund: contract received amount" "$AMOUNT" "$KB0" "$KB1"
-assert_eq "B bounty 2 fee snapshot" "$FEE_BPS" "$(bounty_fee 2)"
-inv arbiter open_dispute --caller "$(a arbiter)" --bounty_id 2
+assert_eq "B bounty $BOUNTY_B fee snapshot" "$FEE_BPS" "$(bounty_fee "$BOUNTY_B")"
+inv arbiter open_dispute --caller "$(a arbiter)" --bounty_id "$BOUNTY_B"
 CB0=$(bal "$CONTRIB"); TB0=$(bal "$TREAS"); MB0=$(bal "$MAINT"); KB2=$(bal "$ID")
-inv arbiter resolve --arbiter "$(a arbiter)" --bounty_id 2 --winner "\"$(a contributor)\"" --winner_bps "$WINNER_BPS"
+inv arbiter resolve --arbiter "$(a arbiter)" --bounty_id "$BOUNTY_B" --winner "\"$(a contributor)\"" --winner_bps "$WINNER_BPS"
 CB1=$(bal "$CONTRIB"); TB1=$(bal "$TREAS"); MB1=$(bal "$MAINT"); KB3=$(bal "$ID")
 assert_delta "B resolve: contributor net" "$NET_B" "$CB0" "$CB1"
 assert_delta "B resolve: treasury fee" "$FEE_B" "$TB0" "$TB1"
