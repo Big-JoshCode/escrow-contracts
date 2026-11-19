@@ -77,6 +77,20 @@ cargo fmt --check
 `se-testnet-treasury`, `se-testnet-relayer`. Create them with `stellar keys generate <name> --network testnet --fund`.
 Set `TESTNET_USDC` to a verified USDC SAC id to allowlist USDC as well.
 
+`deploy-testnet.sh` also reads these optional init parameters. Each defaults to the value the script
+has always used. The effective values are printed before the deploy transaction is sent.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FEE_BPS` | `300` | Fee in basis points passed to `init` (3%). Must be at most `1000`. |
+| `GRACE_SECS` | `259200` | Grace period after a bounty deadline, in seconds (3 days). |
+| `MIN_DURATION_SECS` | `86400` | Shortest allowed bounty duration, in seconds (1 day). |
+| `MAX_DURATION_SECS` | `7776000` | Longest allowed bounty duration, in seconds (90 days). |
+| `TOKEN_MIN` | `10000000` | Minimum funding amount per token, in stroops (1 USDC at 7 decimals). Applied to USDC if set, and to native XLM. |
+| `TOKEN_MAX` | `5000000000` | Maximum funding amount per token, in stroops (500 USDC at 7 decimals). Applied to USDC if set, and to native XLM. |
+
+Example: `FEE_BPS=500 GRACE_SECS=86400 ./scripts/deploy-testnet.sh`
+
 `deploy-mainnet.sh` refuses to run without `--i-have-human-approval` *and* a typed confirmation.
 
 ---
