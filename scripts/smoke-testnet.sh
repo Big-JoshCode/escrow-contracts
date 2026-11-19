@@ -1,21 +1,97 @@
 #!/usr/bin/env bash
 # fund->release and fund->dispute->resolve with native XLM on testnet.
+# Asserts the balance deltas each step must cause, and the get_totals invariant at the end.
+# Exits non-zero on the first mismatch.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ID=$(python3 -c 'import json;print(json.load(open("deployments/testnet.json"))["contract_id"])')
 NATIVE=$(stellar contract id asset --asset native --network testnet)
 a() { stellar keys address "se-testnet-$1"; }
-inv() { local src=$1; shift; stellar contract invoke --id "$ID" --source "se-testnet-$src" --network testnet -- "$@" 2>&1 | grep -v '^ℹ️\|^🌎\|^📅'; }
-bal() { stellar contract invoke --id "$NATIVE" --source se-testnet-admin --network testnet -- balance --id "$1" 2>/dev/null; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+# A failed call aborts the script. The grep only strips the CLI's info lines.
+inv() {
+  local src=$1; shift
+  local out
+  if ! out=$(stellar contract invoke --id "$ID" --source "se-testnet-$src" --network testnet -- "$@" 2>&1); then
+    printf '%s\n' "$out" >&2
+    fail "contract call '$1' from $src failed"
+  fi
+  printf '%s\n' "$out" | grep -v '^ℹ️\|^🌎\|^📅' || true
+}
+bal() { local out; out=$(stellar contract invoke --id "$NATIVE" --source se-testnet-admin --network testnet -- balance --id "$1" 2>/dev/null) || fail "balance read failed for $1"; tr -d '"' <<<"$out"; }
+is_int() { [[ "$1" =~ ^-?[0-9]+$ ]]; }
+# assert_eq <label> <expected> <actual>
+assert_eq() {
+  local label=$1 expected=$2 actual=$3
+  is_int "$actual" || fail "$label: '$actual' is not an integer"
+  if (( actual != expected )); then fail "$label: expected $expected, got $actual"; fi
+  echo "ok   $label = $actual"
+}
+# assert_delta <label> <expected_delta> <balance_before> <balance_after>
+assert_delta() {
+  local label=$1 expected=$2 before=$3 after=$4
+  is_int "$before" && is_int "$after" || fail "$label: non-integer balance (before '$before', after '$after')"
+  local delta=$(( after - before ))
+  if (( delta != expected )); then
+    fail "$label: expected delta $expected, got $delta (before $before, after $after)"
+  fi
+  echo "ok   $label: delta $delta"
+}
+bounty_fee() { inv admin get_bounty --id "$1" | python3 -c 'import json,sys; print(int(json.load(sys.stdin)["fee_bps"]))'; }
+
+AMOUNT=100000000
+FEE_BPS=300        # fee_bps given to init in deploy-testnet.sh; each bounty snapshots it at fund time
+WINNER_BPS=7000    # arbiter split for run B
+BPS=10000
+# Expected deltas, same integer math as the contract's fees::fee / net / portion (floor division).
+FEE_A=$(( AMOUNT * FEE_BPS / BPS ))          # run A: fee to treasury
+NET_A=$(( AMOUNT - FEE_A ))                  # run A: net to contributor
+PORTION_B=$(( AMOUNT * WINNER_BPS / BPS ))   # run B: winner's share before fee
+FEE_B=$(( PORTION_B * FEE_BPS / BPS ))       # run B: fee on the winner's share, to treasury
+NET_B=$(( PORTION_B - FEE_B ))               # run B: net to contributor
+MAINT_B=$(( AMOUNT - PORTION_B ))            # run B: dust-free remainder back to maintainer
+
 DL=$(( $(date +%s) + 2*86400 ))
 ISSUE=$(date +%s)
+CONTRIB=$(a contributor); TREAS=$(a treasury); MAINT=$(a maintainer)
+
 echo "== A: fund -> release"
-inv maintainer fund_bounty --maintainer "$(a maintainer)" --repo_id 1 --issue "$ISSUE" --token "$NATIVE" --amount 100000000 --deadline "$DL" --relayer_allowed true
+K0=$(bal "$ID")
+inv maintainer fund_bounty --maintainer "$(a maintainer)" --repo_id 1 --issue "$ISSUE" --token "$NATIVE" --amount "$AMOUNT" --deadline "$DL" --relayer_allowed true
+K1=$(bal "$ID")
+assert_delta "A fund: contract received amount" "$AMOUNT" "$K0" "$K1"
+assert_eq "A bounty 1 fee snapshot" "$FEE_BPS" "$(bounty_fee 1)"
+CA0=$(bal "$CONTRIB"); TA0=$(bal "$TREAS"); KA0=$(bal "$ID")
 inv relayer release --caller "$(a relayer)" --bounty_id 1 --winner "$(a contributor)"
-echo "winner bal: $(bal "$(a contributor)")  treasury: $(bal "$(a treasury)")"
-echo "== B: fund -> dispute -> resolve 70/30"
-inv maintainer fund_bounty --maintainer "$(a maintainer)" --repo_id 1 --issue "$((ISSUE+1))" --token "$NATIVE" --amount 100000000 --deadline "$DL" --relayer_allowed false
+CA1=$(bal "$CONTRIB"); TA1=$(bal "$TREAS"); KA1=$(bal "$ID")
+assert_delta "A release: contributor net" "$NET_A" "$CA0" "$CA1"
+assert_delta "A release: treasury fee" "$FEE_A" "$TA0" "$TA1"
+assert_delta "A release: contract paid out amount" "-$AMOUNT" "$KA0" "$KA1"
+
+echo "== B: fund -> dispute -> resolve ${WINNER_BPS}/10000 to winner"
+KB0=$(bal "$ID")
+inv maintainer fund_bounty --maintainer "$(a maintainer)" --repo_id 1 --issue "$((ISSUE+1))" --token "$NATIVE" --amount "$AMOUNT" --deadline "$DL" --relayer_allowed false
+KB1=$(bal "$ID")
+assert_delta "B fund: contract received amount" "$AMOUNT" "$KB0" "$KB1"
+assert_eq "B bounty 2 fee snapshot" "$FEE_BPS" "$(bounty_fee 2)"
 inv arbiter open_dispute --caller "$(a arbiter)" --bounty_id 2
-inv arbiter resolve --arbiter "$(a arbiter)" --bounty_id 2 --winner "\"$(a contributor)\"" --winner_bps 7000
-echo "contract held: $(bal "$ID")"
-inv admin get_totals --token "$NATIVE"
+CB0=$(bal "$CONTRIB"); TB0=$(bal "$TREAS"); MB0=$(bal "$MAINT"); KB2=$(bal "$ID")
+inv arbiter resolve --arbiter "$(a arbiter)" --bounty_id 2 --winner "\"$(a contributor)\"" --winner_bps "$WINNER_BPS"
+CB1=$(bal "$CONTRIB"); TB1=$(bal "$TREAS"); MB1=$(bal "$MAINT"); KB3=$(bal "$ID")
+assert_delta "B resolve: contributor net" "$NET_B" "$CB0" "$CB1"
+assert_delta "B resolve: treasury fee" "$FEE_B" "$TB0" "$TB1"
+assert_delta "B resolve: maintainer remainder" "$MAINT_B" "$MB0" "$MB1"
+assert_delta "B resolve: contract paid out amount" "-$AMOUNT" "$KB2" "$KB3"
+
+echo "== invariant: get_totals(native)"
+TOTALS=$(inv admin get_totals --token "$NATIVE")
+TOT=$(printf '%s\n' "$TOTALS" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(*(int(d[k]) for k in ("funded","released_net","fees","refunded","held")))')
+read -r FUNDED RELEASED FEES REFUNDED HELD <<<"$TOT"
+SUM=$(( RELEASED + FEES + REFUNDED + HELD ))
+if (( FUNDED != SUM )); then
+  fail "get_totals funded != released_net + fees + refunded + held: expected funded $SUM, got $FUNDED"
+fi
+echo "ok   funded = released_net + fees + refunded + held = $FUNDED"
+# held + claimable == contract balance. claimable is not exposed by get_totals; no payout is deferred in this run.
+assert_eq "held equals contract balance (no deferred claims)" "$HELD" "$(bal "$ID")"
+echo "smoke-testnet: all assertions passed"
